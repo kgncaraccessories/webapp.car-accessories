@@ -22,6 +22,11 @@ const ICON = {
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
   close: svg('<path d="M6 6l12 12M18 6 6 18"/>'),
   image: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>'),
+  trash: svg('<path d="M4 7h16M10 11v6M14 11v6M5.5 7l1 12.5A2 2 0 0 0 8.5 21h7a2 2 0 0 0 2-1.5L18.5 7M9 7V4.5A1.5 1.5 0 0 1 10.5 3h3A1.5 1.5 0 0 1 15 4.5V7"/>'),
+  check: svg('<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.7 2.7L16.5 9.5"/>'),
+  alert: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>'),
+  logout: svg('<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/>'),
+  inbox: svg('<path d="M3 13.5 5.5 5h13L21 13.5V19a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 13.5h5l1.5 2.5h5l1.5-2.5h5"/>'),
 };
 
 /* ---------- Helpers ---------- */
@@ -57,7 +62,7 @@ const itemImg = (it, size = 300, cls = '') => (it?.image_url
   : `<div class="ph ${cls}">${esc(initials(it?.name))}</div>`);
 
 const spinner = () => '<div class="loading"><span class="spin"></span></div>';
-const empty = (t) => `<div class="empty">${esc(t)}</div>`;
+const empty = (t) => `<div class="empty">${ICON.inbox}<span>${esc(t)}</span></div>`;
 const errorBox = (e) => `<div class="error-box"><b>Something went wrong</b><div>${esc(e?.message || e)}</div></div>`;
 const summaryBox = (pairs) => `<div class="summary">${pairs.map(([k, v]) => `<div><span>${esc(k)}</span><b>${v}</b></div>`).join('')}</div>`;
 
@@ -73,7 +78,9 @@ async function q(promise) {
 }
 function toast(msg, type = '') {
   const t = document.getElementById('toast');
-  t.textContent = msg; t.hidden = false; t.className = `toast ${type}`;
+  t.innerHTML = `${type === 'bad' ? ICON.alert : ICON.check}<span>${esc(msg)}</span>`;
+  t.setAttribute('role', type === 'bad' ? 'alert' : 'status');
+  t.hidden = false; t.className = `toast ${type}`;
   requestAnimationFrame(() => t.classList.add('show'));
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { t.classList.remove('show'); setTimeout(() => (t.hidden = true), 250); }, 2800);
@@ -85,10 +92,53 @@ async function submit(e, fn) {
   const btn = form.querySelector('button:not([type=button])');
   if (btn?.disabled) return;
   const data = Object.fromEntries(new FormData(form));
-  if (btn) btn.disabled = true;
-  try { await fn(data, form); } catch (err) { toast(friendly(err), 'bad'); } finally { if (btn) btn.disabled = false; }
+  if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+  try { await fn(data, form); } catch (err) { toast(friendly(err), 'bad'); } finally { if (btn) { btn.disabled = false; btn.classList.remove('busy'); } }
 }
 async function guarded(fn) { try { await fn(); } catch (err) { toast(friendly(err), 'bad'); } }
+
+/* ---------- Confirm dialog (replaces the browser's confirm()) ---------- */
+function confirmDialog({ title, message = '', ok = 'OK', danger = false }) {
+  return new Promise((resolve) => {
+    const el = document.createElement('div');
+    el.className = 'dialog-wrap';
+    el.innerHTML = `<div class="dialog-backdrop"></div>
+      <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dlg-t" ${message ? 'aria-describedby="dlg-m"' : ''}>
+        <div class="dialog-icon ${danger ? 'bad' : ''}">${danger ? ICON.trash : ICON.alert}</div>
+        <h2 id="dlg-t">${esc(title)}</h2>
+        ${message ? `<p id="dlg-m">${esc(message)}</p>` : ''}
+        <div class="dialog-actions">
+          <button type="button" class="btn" data-no>Cancel</button>
+          <button type="button" class="btn ${danger ? 'danger' : 'primary'}" data-yes>${esc(ok)}</button>
+        </div>
+      </div>`;
+    const prevFocus = document.activeElement;
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.stopImmediatePropagation(); e.preventDefault(); done(false); }
+      if (e.key === 'Tab') { // keep focus inside the dialog
+        const btns = [...el.querySelectorAll('button')];
+        const i = btns.indexOf(document.activeElement);
+        e.preventDefault();
+        btns[(i + (e.shiftKey ? -1 : 1) + btns.length) % btns.length].focus();
+      }
+    };
+    const done = (v) => {
+      document.removeEventListener('keydown', onKey, true);
+      el.classList.remove('open');
+      setTimeout(() => el.remove(), 180);
+      prevFocus?.focus?.();
+      resolve(v);
+    };
+    document.body.appendChild(el);
+    document.addEventListener('keydown', onKey, true);
+    el.querySelector('.dialog-backdrop').onclick = () => done(false);
+    el.querySelector('[data-no]').onclick = () => done(false);
+    el.querySelector('[data-yes]').onclick = () => done(true);
+    requestAnimationFrame(() => el.classList.add('open'));
+    // For destructive actions focus Cancel, so an accidental Enter doesn't delete anything
+    el.querySelector(danger ? '[data-no]' : '[data-yes]').focus();
+  });
+}
 
 /* ---------- Bottom sheets (stackable) ---------- */
 const sheets = [];
@@ -97,11 +147,13 @@ function openSheet(title, bodyHtml, onMount) {
   el.className = 'sheet-wrap';
   el.innerHTML = `<div class="sheet-backdrop"></div>
     <div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+      <div class="sheet-grip" aria-hidden="true"></div>
       <div class="sheet-head"><h2>${esc(title)}</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
       <div class="sheet-body">${bodyHtml}</div>
     </div>`;
   document.body.appendChild(el);
   sheets.push(el);
+  document.body.classList.add('locked');
   el.querySelector('.sheet-backdrop').onclick = closeSheet;
   el.querySelector('[data-close]').onclick = closeSheet;
   requestAnimationFrame(() => el.classList.add('open'));
@@ -113,6 +165,7 @@ function closeSheet() {
   const el = sheets.pop();
   if (!el) return;
   el.classList.remove('open');
+  if (!sheets.length) document.body.classList.remove('locked');
   setTimeout(() => el.remove(), 240);
 }
 function closeAllSheets() { while (sheets.length) closeSheet(); }
@@ -190,7 +243,7 @@ function renderLogin(mode = 'login') {
   try { lastPhone = localStorage.getItem('lastPhone') || ''; } catch { /* ignore */ }
   $app.innerHTML = `
     <div class="auth"><div class="auth-card">
-      <div class="logo">${ICON.stock}</div>
+      <img class="brand-logo" src="logo.jpeg" alt="${esc(CONFIG.SHOP_NAME)}">
       <h1>${esc(CONFIG.SHOP_NAME)}</h1>
       <p class="muted">${signup ? 'Create your account' : 'Log in with your mobile number and PIN'}</p>
       <form id="lf" class="form" novalidate>
@@ -336,7 +389,7 @@ function openCustomerForm(c = null, onSaved) {
       <label>Mobile number<input name="phone" type="tel" inputmode="numeric" value="${esc(c?.phone)}"></label>
       <label>Address<textarea name="address" rows="2">${esc(c?.address)}</textarea></label>
       <button class="btn primary block">Save</button>
-      ${c ? '<button type="button" class="btn danger-t block" id="c-del">Delete customer</button>' : ''}
+      ${c ? `<button type="button" class="btn danger-t block" id="c-del">${ICON.trash}Delete customer</button>` : ''}
     </form>`, (body) => {
     body.querySelector('[name=name]').focus();
     body.querySelector('#cf').onsubmit = (e) => submit(e, async (d) => {
@@ -351,7 +404,7 @@ function openCustomerForm(c = null, onSaved) {
     });
     const del = body.querySelector('#c-del');
     if (del) del.onclick = () => guarded(async () => {
-      if (!confirm(`Delete ${c.name}? Their orders stay but won't be linked to them.`)) return;
+      if (!await confirmDialog({ title: `Delete ${c.name}?`, message: "Their orders stay, but won't be linked to this customer any more.", ok: 'Delete', danger: true })) return;
       await q(sb.from('customers').delete().eq('id', c.id));
       closeAllSheets(); toast('Customer deleted'); refresh();
     });
@@ -535,7 +588,7 @@ function openItem(id) {
       <div class="list">${entries.length ? entries.map((en) => `
         <div class="row static"><div class="row-main"><div class="row-title">+${num(en.qty)} ${esc(it.unit)}${en.cost_price != null ? ` @ ${fmt(en.cost_price)}` : ''}</div>
         <div class="row-sub">${fmtDateTime(en.created_at)}${en.note ? ` · ${esc(en.note)}` : ''}</div></div>
-        <button class="icon-btn" data-del="${en.id}" aria-label="Remove entry">${ICON.close}</button></div>`).join('') : empty('No stock entries yet')}</div>`;
+        <button class="icon-btn del" data-del="${en.id}" aria-label="Remove entry">${ICON.trash}</button></div>`).join('') : empty('No stock entries yet')}</div>`;
     const reopen = () => { closeAllSheets(); refresh(); openItem(id); };
     body.querySelector('#sf').onsubmit = (e) => submit(e, async (d) => {
       const qty = Number(d.qty);
@@ -546,7 +599,7 @@ function openItem(id) {
     });
     body.querySelector('#i-edit').onclick = () => openItemForm(it);
     body.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => guarded(async () => {
-      if (!confirm('Remove this stock entry? The quantity will be taken off stock.')) return;
+      if (!await confirmDialog({ title: 'Remove this stock entry?', message: 'This quantity will be taken off the current stock.', ok: 'Remove', danger: true })) return;
       await q(sb.from('stock_entries').delete().eq('id', b.dataset.del));
       toast('Entry removed'); reopen();
     }); });
@@ -575,7 +628,7 @@ function openItemForm(it = null) {
       </div>
       <div id="itf-status" class="msg"></div>
       <button class="btn primary block">${it ? 'Save changes' : 'Add item'}</button>
-      ${it ? '<button type="button" class="btn danger-t block" id="itf-del">Delete item</button>' : ''}
+      ${it ? `<button type="button" class="btn danger-t block" id="itf-del">${ICON.trash}Delete item</button>` : ''}
     </form>`, (body) => {
     const form = body.querySelector('#itf');
     const fileIn = form.elements.image;
@@ -618,7 +671,7 @@ function openItemForm(it = null) {
     });
     const del = body.querySelector('#itf-del');
     if (del) del.onclick = () => guarded(async () => {
-      if (!confirm(`Delete "${it.name}"? Its stock history is removed; past orders keep the item name.`)) return;
+      if (!await confirmDialog({ title: `Delete "${it.name}"?`, message: 'Its stock history will be removed. Past orders keep the item name.', ok: 'Delete item', danger: true })) return;
       await q(sb.from('items').delete().eq('id', it.id));
       closeAllSheets(); toast('Item deleted'); refresh();
     });
@@ -639,6 +692,11 @@ const RANGES = {
 
 async function renderOrders(v) {
   setTopAction('New order', () => openNewOrder());
+  // Recompute preset ranges so "Today" / "This month" stay correct if the app is left open past midnight
+  if (RANGES[orderState.range]) {
+    const [f, t] = RANGES[orderState.range][1]();
+    Object.assign(orderState, { from: ymd(f), to: ymd(t) });
+  }
   const [customers, items] = await Promise.all([
     q(sb.from('customers').select('id, name').order('name')),
     q(sb.from('items').select('id, name').order('name')),
@@ -657,21 +715,21 @@ async function renderOrders(v) {
     </div>
     <div id="o-sum"></div><div id="o-prod"></div><div id="o-list" class="list">${spinner()}</div>`;
 
+  let loadSeq = 0;
   const load = async () => {
     if (orderState.from > orderState.to) return toast('"From" date is after "To" date', 'bad');
+    const seq = ++loadSeq;
     const [from, to] = dayRange(orderState.from, orderState.to);
     v.querySelector('#o-list').innerHTML = spinner();
-    let query = sb.from('orders').select('id, order_no, total, created_at, customer_id, customers(name), payments(amount), order_items(item_id, item_name, qty, price)')
+    // With a product filter, an inner join keeps only orders containing that product (avoids a huge `id=in.(...)` URL)
+    const lineSel = orderState.item ? 'order_items!inner(item_id, item_name, qty, price)' : 'order_items(item_id, item_name, qty, price)';
+    let query = sb.from('orders').select(`id, order_no, total, created_at, customer_id, customers(name), payments(amount), ${lineSel}`)
       .gte('created_at', from).lt('created_at', to).order('created_at', { ascending: false }).limit(1000);
     if (orderState.customer === 'walkin') query = query.is('customer_id', null);
     else if (orderState.customer) query = query.eq('customer_id', orderState.customer);
-    if (orderState.item) {
-      const hits = await q(sb.from('order_items').select('order_id').eq('item_id', orderState.item).gte('created_at', from).lt('created_at', to).limit(1000));
-      const ids = [...new Set(hits.map((h) => h.order_id))];
-      if (!ids.length) return drawOrders([]);
-      query = query.in('id', ids);
-    }
-    drawOrders(await q(query));
+    if (orderState.item) query = query.eq('order_items.item_id', orderState.item);
+    const orders = await q(query);
+    if (seq === loadSeq) drawOrders(orders); // ignore responses from older, superseded filter changes
   };
 
   const drawOrders = (orders) => {
@@ -740,13 +798,13 @@ function openOrder(id) {
         ${st.due > 0 ? '<button class="btn primary" data-a="pay">Receive payment</button>' : ''}
         <a class="btn" href="${waLink(o.customers?.phone || '', receipt)}" target="_blank" rel="noopener">Share on WhatsApp</a>
       </div>
-      <button class="btn danger-t block" data-a="del">Delete order</button>`;
+      <button class="btn danger-t block" data-a="del">${ICON.trash}Delete order</button>`;
     const pay = body.querySelector('[data-a=pay]');
     if (pay) pay.onclick = () => openPaymentForm({ customerId: o.customer_id, orderId: o.id, suggested: st.due, onSaved: () => { closeAllSheets(); refresh(); openOrder(id); } });
     const custRow = body.querySelector('[data-cust]');
     if (custRow) custRow.onclick = () => openCustomer(custRow.dataset.cust);
     body.querySelector('[data-a=del]').onclick = () => guarded(async () => {
-      if (!confirm(`Delete order #${o.order_no}? Items go back into stock and its payments are removed.`)) return;
+      if (!await confirmDialog({ title: `Delete order #${o.order_no}?`, message: 'Its items go back into stock and its payments are removed.', ok: 'Delete order', danger: true })) return;
       await q(sb.rpc('delete_order', { p_order_id: o.id }));
       closeAllSheets(); toast('Order deleted'); refresh();
     });
@@ -863,13 +921,19 @@ function openNewOrder(preCustomerId = null) {
       if (!lines.length) throw new Error('Add at least one item');
       const over = lines.find((l) => l.qty > l.max);
       if (over) throw new Error(`Only ${num(over.max)} ${over.unit} of "${over.name}" in stock`);
+      const subtotal = round2(sum(lines, (l) => l.qty * l.price));
+      const discount = round2(d.discount);
+      if (discount < 0) throw new Error('Discount cannot be negative');
+      if (discount > subtotal) throw new Error(`Discount cannot be more than the subtotal (${fmt(subtotal)})`);
       const t = total();
       const paid = round2(d.paid);
+      if (paid < 0) throw new Error('Paid amount cannot be negative');
+      if (paid > t) throw new Error(`Paid amount is more than the total (${fmt(t)}). Use "Receive payment" on the customer for advances.`);
       if (!d.customer_id && paid < t) throw new Error('Walk-in orders must be paid in full. Choose a customer to keep a balance.');
       const orderId = await q(sb.rpc('create_order', {
         p_customer_id: d.customer_id || null,
         p_items: lines.map((l) => ({ item_id: l.item_id, qty: l.qty, price: l.price })),
-        p_discount: round2(d.discount), p_paid: paid, p_method: d.method, p_note: d.note.trim() || null,
+        p_discount: discount, p_paid: paid, p_method: d.method, p_note: d.note.trim() || null,
       }));
       closeAllSheets();
       toast('Order saved');
@@ -921,7 +985,7 @@ async function renderSettings(v) {
       </form>
     </section>
 
-    <button class="btn danger block" id="logout">Log out</button>`;
+    <button class="btn danger-outline block" id="logout">${ICON.logout}Log out</button>`;
 
   const loadExpenses = async () => {
     const [y, m] = expMonth.split('-').map(Number);
@@ -936,9 +1000,9 @@ async function renderSettings(v) {
       <div class="row static"><div class="row-main"><div class="row-title">${esc(r.category)}</div>
         <div class="row-sub">${fmtDay(parseYmd(r.spent_on))}${r.note ? ` · ${esc(r.note)}` : ''}</div></div>
         <div class="amt">${fmt(r.amount)}</div>
-        <button class="icon-btn" data-del="${r.id}" aria-label="Delete expense">${ICON.close}</button></div>`).join('') : empty('No expenses this month');
+        <button class="icon-btn del" data-del="${r.id}" aria-label="Delete expense">${ICON.trash}</button></div>`).join('') : empty('No expenses this month');
     v.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => guarded(async () => {
-      if (!confirm('Delete this expense?')) return;
+      if (!await confirmDialog({ title: 'Delete this expense?', message: 'This cannot be undone.', ok: 'Delete', danger: true })) return;
       await q(sb.from('expenses').delete().eq('id', b.dataset.del));
       toast('Expense deleted'); await loadExpenses();
     }); });
@@ -968,7 +1032,7 @@ async function renderSettings(v) {
   });
 
   v.querySelector('#logout').onclick = () => guarded(async () => {
-    if (!confirm('Log out?')) return;
+    if (!await confirmDialog({ title: 'Log out?', message: "You'll need your mobile number and PIN to log back in.", ok: 'Log out' })) return;
     await sb.auth.signOut();
     location.hash = '#/home';
   });

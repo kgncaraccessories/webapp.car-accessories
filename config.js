@@ -20,5 +20,5 @@ export const CONFIG = {
   LOGIN_EMAIL_DOMAIN: 'pin.myshop.app',
 
   // Set to false after you've created your account, so nobody else can sign up.
-  ALLOW_SIGNUP: true,
+  ALLOW_SIGNUP: false,
 };
